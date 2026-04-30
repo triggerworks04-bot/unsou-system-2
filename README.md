@@ -49,6 +49,12 @@
 | [docs/line_notification_design.md](docs/line_notification_design.md) | LINE通知（キュー・重複防止・GAS） |
 | [notes/progress_memo.md](notes/progress_memo.md) | 作業進捗メモ |
 
+## スクリプト（Google Apps Script）
+
+| パス | 内容 |
+|------|------|
+| [scripts/dispatch_conversion.gs](scripts/dispatch_conversion.gs) | **GAS 第1版**：月別配車表から **10_配車予定** を縦持ち生成・UPSERT。**スプレッドシートへ貼り付けて** メニュー「配車変換」または手動実行。初期実装は手動またはメニュー実行。**カレンダー同期・LINE通知は未実装**。 |
+
 ## AI・ツールの役割分担（目安）
 
 | 担当 | 役割 |
