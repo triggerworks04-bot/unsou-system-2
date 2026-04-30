@@ -434,7 +434,7 @@ function upsertScheduleRows_(scheduleSheet, rows, existingMap) {
   /** @type {!Array<{rn: number, arr: !Array<?>}>} */
   var rowUpdatesToApply = [];
   /** @type {!Array<!Array<*>>} */
-  var appendedRowsValues = [];
+  var appendQueue = [];
 
   /** 論理カウント（キューへ入れた追加・更新の候補数） */
   var appendQueued = 0;
@@ -501,13 +501,13 @@ function upsertScheduleRows_(scheduleSheet, rows, existingMap) {
       rowUpdatesToApply.push({ rn: ex.rowNumber, arr: line });
       updateQueued++;
     } else {
-      appendedRowsValues.push(line);
+      appendQueue.push(line);
       appendQueued++;
     }
   }
 
   /** 書き込み対象のみ（無効・空行を除外） */
-  var appendValues = filterAppendLinesForSet_(appendedRowsValues, numColsPhysical);
+  var appendValues = filterAppendLinesForSet_(appendQueue, numColsPhysical);
 
   /** @type {!Array<{rn: number, line: !Array<*>}>} */
   var updateWrites = [];
@@ -533,26 +533,35 @@ function upsertScheduleRows_(scheduleSheet, rows, existingMap) {
 
   for (var u = 0; u < updateWrites.length; u++) {
     var w = updateWrites[u];
-    var oneRowRange = scheduleSheet.getRange(w.rn, 1, w.rn, numColsPhysical);
+    var updateRg = scheduleSheet.getRange(w.rn, 1, 1, numColsPhysical);
     var rowMatrix = [w.line];
-    if (rowMatrix.length !== oneRowRange.getNumRows()) {
+    if (rowMatrix.length !== updateRg.getNumRows()) {
       throw new Error(
         'internal: 更新の行数が一致しません (values=' +
           rowMatrix.length +
           ' rangeRows=' +
-          oneRowRange.getNumRows() +
+          updateRg.getNumRows() +
           ')'
       );
     }
-    oneRowRange.setValues(rowMatrix);
+    updateRg.setValues(rowMatrix);
   }
 
   if (appendValues.length > 0) {
-    var startRowAppend = scheduleSheet.getLastRow() + 1;
-    var appendRowCount = appendValues.length;
-    var appendLastRow = startRowAppend + appendRowCount - 1;
-    var appendRg = scheduleSheet.getRange(startRowAppend, 1, appendLastRow, numColsPhysical);
-    if (appendValues.length !== appendRg.getNumRows()) {
+    var startRow = scheduleSheet.getLastRow() + 1;
+    var appendRg = scheduleSheet.getRange(
+      startRow,
+      1,
+      appendValues.length,
+      numColsPhysical
+    );
+
+    Logger.log(`appendValues.length=${appendValues.length}`);
+    Logger.log(`append startRow=${startRow}`);
+    Logger.log(`append rangeRows=${appendRg.getNumRows()}`);
+    Logger.log(`numColsPhysical=${numColsPhysical}`);
+
+    if (appendRg.getNumRows() !== appendValues.length) {
       throw new Error(
         'internal: 追記の行数が一致しません (values=' +
           appendValues.length +
@@ -561,6 +570,7 @@ function upsertScheduleRows_(scheduleSheet, rows, existingMap) {
           ')'
       );
     }
+
     appendRg.setValues(appendValues);
   }
 
