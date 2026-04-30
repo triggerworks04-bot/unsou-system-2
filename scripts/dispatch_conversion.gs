@@ -11,10 +11,10 @@
 var TARGET_SCHEDULE_SHEET_NAME = '10_配車予定';
 
 /** @type {number} 案件列見出しの行番号（1起点・実ファイルに合わせて変更） */
-var HEADER_ROW = 15;
+var HEADER_ROW = 2;
 
 /** @type {number} データ走査開始行（1起点・実ファイルに合わせて変更） */
-var START_ROW = 16;
+var START_ROW = 3;
 
 /** @type {number} A列＝日付 */
 var DATE_COL = 1;
@@ -196,17 +196,19 @@ function getJobNames_(values) {
  * @param {!Array<!Array<*>>} values
  * @param {number} headerRow 1起点
  * @param {string} headerName 正規化後と比較する見出し名
+ * @param {number=} startCol 検索開始列（1起点）。省略時は 1
  * @return {number}
  */
-function findHeaderColumnByName_(values, headerRow, headerName) {
+function findHeaderColumnByName_(values, headerRow, headerName, startCol) {
   var row = values[headerRow - 1];
   if (!row) {
     throw new Error('ヘッダー行が見つかりません: ' + headerRow);
   }
-  for (var i = 0; i < row.length; i++) {
-    var value = normalizeCellValue_(row[i]);
+  var fromCol = startCol == null || startCol < 1 ? 1 : startCol;
+  for (var col = fromCol; col <= row.length; col++) {
+    var value = normalizeCellValue_(row[col - 1]);
     if (value === headerName) {
-      return i + 1;
+      return col;
     }
   }
   return 0;
@@ -218,10 +220,18 @@ function findHeaderColumnByName_(values, headerRow, headerName) {
  * @return {number}
  */
 function getLastJobCol_(values) {
-  var stopCol = findHeaderColumnByName_(values, HEADER_ROW, STOP_HEADER_NAME);
+  Logger.log(`HEADER_ROW=${HEADER_ROW}`);
+  Logger.log(`STOP_HEADER_NAME=${STOP_HEADER_NAME}`);
+
+  var stopCol = findHeaderColumnByName_(
+    values,
+    HEADER_ROW,
+    STOP_HEADER_NAME,
+    FIRST_JOB_COL
+  );
   if (!stopCol) {
     throw new Error(
-      '案件列の終了位置を判定できませんでした。ヘッダー行に「' +
+      '案件列の終了位置を判定できませんでした。ヘッダー行のD列以降に「' +
         STOP_HEADER_NAME +
         '」があるか確認してください。'
     );
@@ -229,9 +239,17 @@ function getLastJobCol_(values) {
 
   var lastJobCol = stopCol - 1;
 
+  Logger.log(`stopCol=${stopCol}`);
+  Logger.log(`lastJobCol=${lastJobCol}`);
+
   if (lastJobCol < FIRST_JOB_COL) {
     throw new Error(
-      '案件列の範囲が不正です。FIRST_JOB_COL=' + FIRST_JOB_COL + ', lastJobCol=' + lastJobCol
+      '案件列の範囲が不正です。FIRST_JOB_COL=' +
+        FIRST_JOB_COL +
+        ', stopCol=' +
+        stopCol +
+        ', lastJobCol=' +
+        lastJobCol
     );
   }
 
