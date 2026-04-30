@@ -8,7 +8,8 @@
 
 | システム | 役割 |
 |----------|------|
-| 配車予定表 | **最上流データ**。運行予定の起点。**ステータス**（予定／確定／変更／キャンセル）で予定変更・同期・通知を制御 |
+| 配車（システム連携） | **10_配車予定**。月別**横持ち**表から変換した**縦持ち**。運行予定の起点。**ステータス**でカレンダー・LINEほか連携を制御 |
+| 配車（印刷・人用） | `配車予定表_2026年マスター.xlsx` の**横持ち**。**A3**・掲示・全体調整。システム管理列は原則持たず、**変換により 10_配車予定** を生成 |
 | 点呼記録簿 | 点呼業務記録 |
 | 運行日報 | 日々の運行実績・報告（**ヘッダ**と**運行明細**の2層） |
 | 売上管理表 | 売上・案件に紐づく収益情報 |
@@ -39,7 +40,7 @@
 | [docs/system_design.md](docs/system_design.md) | 全体構成・データフロー・方針 |
 | [docs/schema_master.md](docs/schema_master.md) | **列定義の元本**（新規列は必ずここを先に更新） |
 | [docs/source_materials.md](docs/source_materials.md) | Drive／既存資料の一覧と扱い |
-| [docs/calendar_sync_design.md](docs/calendar_sync_design.md) | 配車予定表（カレンダー／予定系）設計 |
+| [docs/calendar_sync_design.md](docs/calendar_sync_design.md) | **10_配車予定** と Google カレンダー同期設計 |
 | [docs/tenko_record_design.md](docs/tenko_record_design.md) | 点呼記録簿設計 |
 | [docs/daily_report_design.md](docs/daily_report_design.md) | 運行日報設計 |
 | [docs/sales_management_design.md](docs/sales_management_design.md) | 売上管理表設計 |
@@ -58,7 +59,7 @@
 
 1. 設計の正本は **GitHub の `docs/`** とする。Google Drive は参考資料である。
 2. スプレッドシート／AppSheet の列追加・変更は、**先に `docs/schema_master.md` を更新**してから実装する。
-3. 配車予定表をデータの上流とし、運行予定IDで下流システムと論理的に結ぶ。
+3. **10_配車予定**（変換済み縦持ち）をデータの上流（システム連携）とし、**運行予定ID**で下流システムと論理的に結ぶ。印刷用の**月別横持ち配車表**からは直接連携しない。
 4. **内部Key** は **UNIQUEID()**。**表示用番号** は別列・後続整備可（詳細は `schema_master.md` の ID・採番ルール）。
 
 ---
