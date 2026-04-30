@@ -28,8 +28,11 @@ var TYPE_COL = 3;
 /** @type {number} 案件開始列（D列） */
 var FIRST_JOB_COL = 4;
 
-/** @type {number} 案件終了列（V列） */
-var LAST_JOB_COL = 22;
+/**
+ * 案件列の右端を決めるヘッダー見出し名（この列の1つ左までが案件列）。
+ * 「担当者」列およびその右（出勤日数等）は変換対象外。
+ */
+var STOP_HEADER_NAME = '担当者';
 
 /** @type {string} 担当者行の区分値 */
 var TYPE_DRIVER = '担当者';
@@ -102,11 +105,6 @@ function convertCurrentDispatchSheetToSchedule() {
 
     var values = readDispatchSheet_(sourceSheet);
     var jobNames = getJobNames_(values);
-    if (!jobNames || jobNames.length === 0) {
-      throw new Error(
-        '案件ヘッダを取得できませんでした（HEADER_ROW=' + HEADER_ROW + ' を確認してください）。'
-      );
-    }
 
     var stats = { skippedBothEmpty: 0, skippedNoDate: 0 };
     var rows = buildScheduleRows_(sourceSheet, values, jobNames, stats);
@@ -160,28 +158,84 @@ function readDispatchSheet_(sheet) {
 }
 
 /**
- * HEADER_ROW 行の D〜V から案件名一覧を構築する。
+ * HEADER_ROW で「STOP_HEADER_NAME」列の直前までを案件列とし、その見出しから案件名一覧を構築する。
  * @param {!Array<!Array<*>>} values
  * @return {!Array<{colIndex: number, a1Column: string, jobName: string}>}
  */
 function getJobNames_(values) {
-  var rowIdx = HEADER_ROW - 1;
-  if (!values[rowIdx]) return [];
+  var lastJobCol = getLastJobCol_(values);
+  var header = values[HEADER_ROW - 1];
+  if (!header) throw new Error('ヘッダー行が見つかりません: ' + HEADER_ROW);
 
-  var row = values[rowIdx];
-  var jobs = [];
+  var jobNames = [];
 
-  for (var c = FIRST_JOB_COL; c <= LAST_JOB_COL; c++) {
-    var idx = c - 1;
-    var name = normalizeCellValue_(row[idx]);
-    if (!name) continue;
-    jobs.push({
-      colIndex: c,
-      a1Column: columnToLetters_(c),
-      jobName: name,
+  for (var col = FIRST_JOB_COL; col <= lastJobCol; col++) {
+    var jobName = normalizeCellValue_(header[col - 1]);
+    if (!jobName) continue;
+    jobNames.push({
+      colIndex: col,
+      a1Column: columnToLetters_(col),
+      jobName: jobName,
     });
   }
-  return jobs;
+
+  if (jobNames.length === 0) {
+    throw new Error(
+      '案件ヘッダを取得できませんでした（HEADER_ROW=' + HEADER_ROW + ' を確認してください）。'
+    );
+  }
+
+  Logger.log('案件列範囲: ' + FIRST_JOB_COL + '〜' + lastJobCol);
+  Logger.log('案件列数: ' + jobNames.length);
+
+  return jobNames;
+}
+
+/**
+ * ヘッダー行から指定名と一致する列番号を返す（1起点）。見つからない場合は 0。
+ * @param {!Array<!Array<*>>} values
+ * @param {number} headerRow 1起点
+ * @param {string} headerName 正規化後と比較する見出し名
+ * @return {number}
+ */
+function findHeaderColumnByName_(values, headerRow, headerName) {
+  var row = values[headerRow - 1];
+  if (!row) {
+    throw new Error('ヘッダー行が見つかりません: ' + headerRow);
+  }
+  for (var i = 0; i < row.length; i++) {
+    var value = normalizeCellValue_(row[i]);
+    if (value === headerName) {
+      return i + 1;
+    }
+  }
+  return 0;
+}
+
+/**
+ * 案件列の最終列（1起点）。「担当者」ヘッダ列の1つ左。
+ * @param {!Array<!Array<*>>} values
+ * @return {number}
+ */
+function getLastJobCol_(values) {
+  var stopCol = findHeaderColumnByName_(values, HEADER_ROW, STOP_HEADER_NAME);
+  if (!stopCol) {
+    throw new Error(
+      '案件列の終了位置を判定できませんでした。ヘッダー行に「' +
+        STOP_HEADER_NAME +
+        '」があるか確認してください。'
+    );
+  }
+
+  var lastJobCol = stopCol - 1;
+
+  if (lastJobCol < FIRST_JOB_COL) {
+    throw new Error(
+      '案件列の範囲が不正です。FIRST_JOB_COL=' + FIRST_JOB_COL + ', lastJobCol=' + lastJobCol
+    );
+  }
+
+  return lastJobCol;
 }
 
 /**
