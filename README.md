@@ -40,6 +40,7 @@
 | [docs/system_design.md](docs/system_design.md) | 全体構成・データフロー・方針 |
 | [docs/schema_master.md](docs/schema_master.md) | **列定義の元本**（新規列は必ずここを先に更新） |
 | [docs/dispatch_conversion_design.md](docs/dispatch_conversion_design.md) | **月別横持ち配車表**から **10_配車予定** へ変換するルール |
+| [docs/dispatch_conversion_gas_spec.md](docs/dispatch_conversion_gas_spec.md) | 月別配車表から **10_配車予定** を生成する **GAS 実装仕様** |
 | [docs/source_materials.md](docs/source_materials.md) | Drive／既存資料の一覧と扱い |
 | [docs/calendar_sync_design.md](docs/calendar_sync_design.md) | **10_配車予定** と Google カレンダー同期設計 |
 | [docs/tenko_record_design.md](docs/tenko_record_design.md) | 点呼記録簿設計 |
