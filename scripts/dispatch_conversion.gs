@@ -311,7 +311,8 @@ function getDayNumber_(value) {
 }
 
 /**
- * 年月日からローカル日付のみの Date を返す（不正な組み合わせは null）。
+ * 年月日から「その暦日」の Date を返す（不正な組み合わせは null）。
+ * スプレッドシートのタイムゾーンで 00:00 刻みになると前日表示になり得るため、日付のみ利用し **12:00 ローカル**で生成する。
  * @param {number} year
  * @param {number} month
  * @param {number} day
@@ -319,7 +320,7 @@ function getDayNumber_(value) {
  */
 function buildScheduleDate_(year, month, day) {
   if (!year || !month || !day) return null;
-  var d = new Date(year, month - 1, day);
+  var d = new Date(year, month - 1, day, 12, 0, 0);
   if (
     isNaN(d.getTime()) ||
     d.getFullYear() !== year ||
@@ -333,6 +334,7 @@ function buildScheduleDate_(year, month, day) {
 
 /**
  * 予定日から曜日表示（例: 「水曜日」）を返す。第1版の曜日出力の正。
+ * `buildScheduleDate_` の **正午 Date** と整合（同一暦日上の曜日）。
  * @param {Date} dateValue
  * @return {string}
  */
@@ -818,7 +820,8 @@ function normalizeCellValue_(value) {
 }
 
 /**
- * 日付または疑似的な入力を yyyy-MM-dd に整形する。
+ * 日付または疑似的な入力を yyyy-MM-dd に整形する（複合キー・照合用）。
+ * スプレッドシート TZ で `yyyy-MM-dd` を得る。**予定日**は通常 `buildScheduleDate_` 由来の正午 Date。
  * @param {*} dateValue
  * @param {string} timeZone IANA TZ
  * @return {string}
@@ -827,8 +830,11 @@ function formatDateKey_(dateValue, timeZone) {
   try {
     if (dateValue === '' || dateValue === null || dateValue === undefined) return '';
     var d = null;
-    if (dateValue instanceof Date && !isNaN(dateValue.getTime())) d = dateValue;
-    else d = coerceToDate_(dateValue, null, timeZone);
+    if (dateValue instanceof Date && !isNaN(dateValue.getTime())) {
+      d = dateValue;
+    } else {
+      d = coerceToDate_(dateValue, null, timeZone);
+    }
     if (!d || isNaN(d.getTime())) return '';
     return Utilities.formatDate(d, timeZone, 'yyyy-MM-dd');
   } catch (e) {
