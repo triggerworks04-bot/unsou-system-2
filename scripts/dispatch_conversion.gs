@@ -257,6 +257,92 @@ function getLastJobCol_(values) {
 }
 
 /**
+ * 親スプレッドシートのファイル名から年（例: 2026）を取得する。
+ * @param {string} spreadsheetName
+ * @return {number}
+ */
+function getYearFromSpreadsheetName_(spreadsheetName) {
+  var text = normalizeCellValue_(String(spreadsheetName));
+  var match = text.match(/(20\d{2})年?/);
+  if (!match) {
+    throw new Error('スプレッドシート名から年を取得できませんでした: ' + spreadsheetName);
+  }
+  return Number(match[1]);
+}
+
+/**
+ * 月別シート名から月を取得する（例: 「4月度」→ 4）。
+ * @param {string} sheetName
+ * @return {number}
+ */
+function getMonthFromSheetName_(sheetName) {
+  var text = normalizeCellValue_(String(sheetName));
+  var match = text.match(/(\d{1,2})月/);
+  if (!match) {
+    throw new Error('シート名から月を取得できませんでした: ' + sheetName);
+  }
+  var month = Number(match[1]);
+  if (month < 1 || month > 12) {
+    throw new Error('シート名から取得した月が不正です: ' + sheetName);
+  }
+  return month;
+}
+
+/**
+ * A列の日番号（1〜31）を取得。Excelシリアルのような大きな数値は日として扱わない。
+ * @param {*} value
+ * @return {?number}
+ */
+function getDayNumber_(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return value.getDate();
+  }
+  if (typeof value === 'number' && !isNaN(value)) {
+    var n = Math.floor(Number(value));
+    if (Number(value) === n && n >= 1 && n <= 31) return n;
+    return null;
+  }
+  var text = normalizeCellValue_(value);
+  if (!text) return null;
+  if (!/^\d{1,2}$/.test(text)) return null;
+  var day = parseInt(text, 10);
+  if (day < 1 || day > 31) return null;
+  return day;
+}
+
+/**
+ * 年月日からローカル日付のみの Date を返す（不正な組み合わせは null）。
+ * @param {number} year
+ * @param {number} month
+ * @param {number} day
+ * @return {?Date}
+ */
+function buildScheduleDate_(year, month, day) {
+  if (!year || !month || !day) return null;
+  var d = new Date(year, month - 1, day);
+  if (
+    isNaN(d.getTime()) ||
+    d.getFullYear() !== year ||
+    d.getMonth() !== month - 1 ||
+    d.getDate() !== day
+  ) {
+    return null;
+  }
+  return d;
+}
+
+/**
+ * 予定日から曜日表示（例: 「水曜日」）を返す。第1版の曜日出力の正。
+ * @param {Date} dateValue
+ * @return {string}
+ */
+function getWeekdayText_(dateValue) {
+  if (!(dateValue instanceof Date) || isNaN(dateValue.getTime())) return '';
+  var weekdays = ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日'];
+  return weekdays[dateValue.getDay()];
+}
+
+/**
  * 担当者行＋車両行のセットから 10_配車予定 向けオブジェクトを生成する。
  * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
  * @param {!Array<!Array<*>>} values
@@ -270,11 +356,9 @@ function buildScheduleRows_(sheet, values, jobNames, statistics) {
   if (typeof statistics.skippedNoDate !== 'number') statistics.skippedNoDate = 0;
 
   var sheetName = sheet.getName();
-  var tz =
-    SpreadsheetApp.getActive().getSpreadsheetTimeZone() || Session.getScriptTimeZone();
-
-  var yearMonthCtx = inferYearMonthFromSheetName_(sheetName);
-  if (!yearMonthCtx) yearMonthCtx = inferYearMonthFromColumnA_(values, tz);
+  var spreadsheetName = sheet.getParent().getName();
+  var year = getYearFromSpreadsheetName_(spreadsheetName);
+  var month = getMonthFromSheetName_(sheetName);
 
   var out = [];
 
@@ -294,15 +378,14 @@ function buildScheduleRows_(sheet, values, jobNames, statistics) {
     var vehicleRowMissing =
       !vehicleRow || normalizeCellValue_(vehicleRow[typeColIdx]) !== TYPE_VEHICLE;
 
-    var dateRaw = driverRow[DATE_COL - 1];
-    var scheduleDate = resolveScheduleDate_(dateRaw, yearMonthCtx, tz);
+    var day = getDayNumber_(driverRow[DATE_COL - 1]);
+    var scheduleDate = buildScheduleDate_(year, month, day);
     if (!scheduleDate) {
       statistics.skippedNoDate++;
       continue;
     }
 
-    var weekdayFromCol = normalizeCellValue_(driverRow[WEEKDAY_COL - 1]);
-    var weekdayComputed = getWeekdayTextJp_(scheduleDate, tz);
+    var weekday = getWeekdayText_(scheduleDate);
 
     for (var j = 0; j < jobNames.length; j++) {
       var job = jobNames[j];
@@ -333,7 +416,7 @@ function buildScheduleRows_(sheet, values, jobNames, statistics) {
       rec['運行予定ID'] = '';
       rec['運行予定番号'] = '';
       rec['予定日'] = scheduleDate;
-      rec['曜日'] = weekdayComputed || weekdayFromCol || '';
+      rec['曜日'] = weekday;
       rec['案件ID'] = '';
       rec['案件名_入力値'] = job.jobName;
       rec['運転者ID'] = '';
@@ -809,36 +892,7 @@ function validateRequiredHeaders_(headerMap) {
 }
 
 /**
- * @param {string} sheetName
- * @return {?{year:number, month:number}}
- */
-function inferYearMonthFromSheetName_(sheetName) {
-  var re = /(\d{4})\s*年\s*(\d{1,2})\s*月/;
-  var m = sheetName.match(re);
-  if (!m) return null;
-  return { year: parseInt(m[1], 10), month: parseInt(m[2], 10) };
-}
-
-/**
- * A列を上から走査し、最初の有効な日付から年月を推定する。
- * @param {!Array<!Array<*>>} values
- * @param {string} timeZone
- * @return {?{year:number, month:number}}
- */
-function inferYearMonthFromColumnA_(values, timeZone) {
-  for (var i = 0; i < values.length; i++) {
-    var v = values[i] && values[i][DATE_COL - 1];
-    var d = coerceToDate_(v, null, timeZone);
-    if (d && !isNaN(d.getTime())) {
-      return { year: d.getFullYear(), month: d.getMonth() + 1 };
-    }
-  }
-  var n = new Date();
-  return { year: n.getFullYear(), month: n.getMonth() + 1 };
-}
-
-/**
- * A列の値を予定日（Date）に解決する。
+ * formatDateKey_ 経由での日付解釈に使用する。
  * @param {*} raw
  * @param {?{year:number, month:number}} yearMonthCtx
  * @param {string} timeZone
@@ -888,15 +942,4 @@ function resolveScheduleDate_(raw, yearMonthCtx, timeZone) {
  */
 function coerceToDate_(value, ym, timeZone) {
   return resolveScheduleDate_(value, ym, timeZone);
-}
-
-/**
- * @param {Date} date
- * @param {string} timeZone
- * @return {string}
- */
-function getWeekdayTextJp_(date, timeZone) {
-  var w = date.getDay();
-  var arr = ['日', '月', '火', '水', '木', '金', '土'];
-  return arr[w] + '曜日';
 }
