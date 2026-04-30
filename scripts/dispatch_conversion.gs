@@ -312,7 +312,7 @@ function getDayNumber_(value) {
 
 /**
  * 年月日から「その暦日」の Date を返す（不正な組み合わせは null）。
- * スプレッドシートのタイムゾーンで 00:00 刻みになると前日表示になり得るため、日付のみ利用し **12:00 ローカル**で生成する。
+ * **`10_配車予定` の予定日出力には使わず**、`buildScheduleDateText_` と曜日算出用 Date の検証など補助用。
  * @param {number} year
  * @param {number} month
  * @param {number} day
@@ -333,8 +333,23 @@ function buildScheduleDate_(year, month, day) {
 }
 
 /**
+ * 10_配車予定へ出力する予定日文字列 yyyy/MM/dd（TZ により Date 書き込みで前日表示になることを避ける）。
+ * @param {number} year
+ * @param {number} month
+ * @param {number} day
+ * @return {string}
+ */
+function buildScheduleDateText_(year, month, day) {
+  if (!year || !month || !day) return '';
+  var yyyy = String(year);
+  var mm = String(month).padStart(2, '0');
+  var dd = String(day).padStart(2, '0');
+  return yyyy + '/' + mm + '/' + dd;
+}
+
+/**
  * 予定日から曜日表示（例: 「水曜日」）を返す。第1版の曜日出力の正。
- * `buildScheduleDate_` の **正午 Date** と整合（同一暦日上の曜日）。
+ * 算出用の **正午ローカル Date** と整合（年月日のみの暦日上の曜日）。
  * @param {Date} dateValue
  * @return {string}
  */
@@ -381,13 +396,26 @@ function buildScheduleRows_(sheet, values, jobNames, statistics) {
       !vehicleRow || normalizeCellValue_(vehicleRow[typeColIdx]) !== TYPE_VEHICLE;
 
     var day = getDayNumber_(driverRow[DATE_COL - 1]);
-    var scheduleDate = buildScheduleDate_(year, month, day);
-    if (!scheduleDate) {
+    if (!day) {
       statistics.skippedNoDate++;
       continue;
     }
-
-    var weekday = getWeekdayText_(scheduleDate);
+    var scheduleDateForCalc = new Date(year, month - 1, day, 12, 0, 0);
+    if (
+      isNaN(scheduleDateForCalc.getTime()) ||
+      scheduleDateForCalc.getFullYear() !== year ||
+      scheduleDateForCalc.getMonth() !== month - 1 ||
+      scheduleDateForCalc.getDate() !== day
+    ) {
+      statistics.skippedNoDate++;
+      continue;
+    }
+    var scheduleDateText = buildScheduleDateText_(year, month, day);
+    if (!scheduleDateText) {
+      statistics.skippedNoDate++;
+      continue;
+    }
+    var weekday = getWeekdayText_(scheduleDateForCalc);
 
     for (var j = 0; j < jobNames.length; j++) {
       var job = jobNames[j];
@@ -417,7 +445,7 @@ function buildScheduleRows_(sheet, values, jobNames, statistics) {
 
       rec['運行予定ID'] = '';
       rec['運行予定番号'] = '';
-      rec['予定日'] = scheduleDate;
+      rec['予定日'] = scheduleDateText;
       rec['曜日'] = weekday;
       rec['案件ID'] = '';
       rec['案件名_入力値'] = job.jobName;
@@ -778,7 +806,7 @@ function buildOutputLine_(headerRowVals, mergedObj) {
 }
 
 /**
- * UPSERT の複合キーを生成する（予定日は yyyy-MM-dd）。
+ * UPSERT の複合キーを生成する（予定日キーは `normalizeDateKey_` で yyyy-MM-dd）。
  * @param {!Object<string, *>} row
  * @return {string}
  */
@@ -793,7 +821,7 @@ function buildSourceKey_(row) {
   var sheetNm = normalizeCellValue_(String(row['作成元シート名'] || ''));
   var jd = normalizeCellValue_(String(row['案件名_入力値'] || ''));
   var cell = normalizeCellValue_(String(row['作成元セル'] || ''));
-  var dkey = formatDateKey_(row['予定日'], tz);
+  var dkey = normalizeDateKey_(row['予定日'], tz);
 
   if (!sheetNm || !jd || !cell || !dkey) return '';
   return sheetNm + '\x1f' + dkey + '\x1f' + jd + '\x1f' + cell;
@@ -820,26 +848,48 @@ function normalizeCellValue_(value) {
 }
 
 /**
- * 日付または疑似的な入力を yyyy-MM-dd に整形する（複合キー・照合用）。
- * スプレッドシート TZ で `yyyy-MM-dd` を得る。**予定日**は通常 `buildScheduleDate_` 由来の正午 Date。
+ * 予定日列の値を複合キー用 **yyyy-MM-dd** に統一する。
+ * `yyyy/MM/dd`・`yyyy-MM-dd` の文字列、スプレッドシート読み込みの `Date`、その他 coerce 可能な入力を想定。
+ * @param {*} value
+ * @param {string} timeZone IANA TZ
+ * @return {string}
+ */
+function normalizeDateKey_(value, timeZone) {
+  try {
+    if (value === '' || value === null || value === undefined) return '';
+    if (value instanceof Date && !isNaN(value.getTime())) {
+      return Utilities.formatDate(value, timeZone, 'yyyy-MM-dd');
+    }
+    var text = normalizeCellValue_(String(value));
+    if (!text) return '';
+    var m = text.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (m) {
+      return (
+        m[1] +
+        '-' +
+        String(Number(m[2])).padStart(2, '0') +
+        '-' +
+        String(Number(m[3])).padStart(2, '0')
+      );
+    }
+    var coerced = coerceToDate_(value, null, timeZone);
+    if (coerced && !isNaN(coerced.getTime())) {
+      return Utilities.formatDate(coerced, timeZone, 'yyyy-MM-dd');
+    }
+    return '';
+  } catch (e) {
+    return '';
+  }
+}
+
+/**
+ * {@link normalizeDateKey_} へのエイリアス（複合キー・照合用 yyyy-MM-dd）。
  * @param {*} dateValue
  * @param {string} timeZone IANA TZ
  * @return {string}
  */
 function formatDateKey_(dateValue, timeZone) {
-  try {
-    if (dateValue === '' || dateValue === null || dateValue === undefined) return '';
-    var d = null;
-    if (dateValue instanceof Date && !isNaN(dateValue.getTime())) {
-      d = dateValue;
-    } else {
-      d = coerceToDate_(dateValue, null, timeZone);
-    }
-    if (!d || isNaN(d.getTime())) return '';
-    return Utilities.formatDate(d, timeZone, 'yyyy-MM-dd');
-  } catch (e) {
-    return '';
-  }
+  return normalizeDateKey_(dateValue, timeZone);
 }
 
 /**
