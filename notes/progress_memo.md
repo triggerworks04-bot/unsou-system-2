@@ -88,6 +88,11 @@
 - **カレンダー同期**・**LINE通知**・**高度なマスタ照合**は後続対応とする。
 - **次の作業**：実際の Googleスプレッドシートに `scripts/dispatch_conversion.gs` を貼り付け、**テスト用シート**で変換テストを行うこと。
 
+## 2026-04-30（追記）：10_配車予定への setValues 行数整合
+
+- **修正**：`upsertScheduleRows_()` で、`getRange()` の行数と `setValues()` の二次元配列の行数が必ず一致するよう整理した（追記は `appendValues.length` 基準・無効／空の追記候補は除外）。
+- **ログ**：追加対象行数・更新対象行数・実際に setValues する行数を `Logger.log` 出力した。
+
 ## メモ欄
 
 （自由記述）

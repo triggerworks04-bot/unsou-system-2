@@ -346,6 +346,59 @@ function findExistingScheduleMap_(scheduleSheet) {
 }
 
 /**
+ * setValues 用に1行を物理列数へ整える。無効時は null。
+ * @param {*} arr
+ * @param {number} numColsPhysical
+ * @return {?Array}
+ */
+function sanitizeLineForSet_(arr, numColsPhysical) {
+  if (!Array.isArray(arr)) return null;
+  var line = [];
+  for (var c = 0; c < numColsPhysical; c++) {
+    line.push(c < arr.length ? arr[c] : '');
+  }
+  return line;
+}
+
+/**
+ * 物理列上ですべて空白相当か（空セル／null／undefined）。
+ * @param {!Array<*>} line
+ * @return {boolean}
+ */
+function isBlankPhysicalLine_(line) {
+  for (var i = 0; i < line.length; i++) {
+    var v = line[i];
+    if (v === null || v === undefined) continue;
+    if (v === '') continue;
+    if (v instanceof Date) {
+      if (!isNaN(v.getTime())) return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 追記候補行から setValues に渡せるものだけ残す。
+ * @param {!Array} rows2d 二次元配列（undefined 混入可）
+ * @param {number} numColsPhysical
+ * @return {!Array<!Array<*>>}
+ */
+function filterAppendLinesForSet_(rows2d, numColsPhysical) {
+  var out = [];
+  if (!rows2d || !rows2d.length) return out;
+  for (var i = 0; i < rows2d.length; i++) {
+    var row = rows2d[i];
+    if (row === null || row === undefined) continue;
+    var sanitized = sanitizeLineForSet_(row, numColsPhysical);
+    if (!sanitized || isBlankPhysicalLine_(sanitized)) continue;
+    out.push(sanitized);
+  }
+  return out;
+}
+
+/**
  * UPSERT で 10_配車予定 を更新または追記する。
  * @param {GoogleAppsScript.Spreadsheet.Sheet} scheduleSheet
  * @param {!Array<!Object<string, *>>} rows
@@ -363,16 +416,29 @@ function upsertScheduleRows_(scheduleSheet, rows, existingMap) {
   /** 物理列順序をそのまま使う（空ヘッダー列は出力を空とする）。 */
   var numColsPhysical = headerRowVals.length;
 
+  /** 変換0件でもエラーにせず打ち切りログのみ出す */
+  if (!rows || rows.length === 0) {
+    Logger.log('追加対象行数: 0');
+    Logger.log('更新対象行数: 0');
+    Logger.log('実際に setValues する行数: 0');
+    Logger.log(
+      'UPSERT 省略（入力0件） skipped=0 needsReview(in rows)=0'
+    );
+    return { added: 0, updated: 0, skipped: 0, needsReview: 0 };
+  }
+
   var now = new Date();
 
-  var added = 0;
-  var updated = 0;
   var skipped = 0;
 
   /** @type {!Array<{rn: number, arr: !Array<?>}>} */
   var rowUpdatesToApply = [];
   /** @type {!Array<!Array<*>>} */
   var appendedRowsValues = [];
+
+  /** 論理カウント（キューへ入れた追加・更新の候補数） */
+  var appendQueued = 0;
+  var updateQueued = 0;
 
   for (var i = 0; i < rows.length; i++) {
     var src = rows[i];
@@ -433,24 +499,73 @@ function upsertScheduleRows_(scheduleSheet, rows, existingMap) {
 
     if (ex) {
       rowUpdatesToApply.push({ rn: ex.rowNumber, arr: line });
-      updated++;
+      updateQueued++;
     } else {
       appendedRowsValues.push(line);
-      added++;
+      appendQueued++;
     }
   }
 
-  for (var u = 0; u < rowUpdatesToApply.length; u++) {
-    var patch = rowUpdatesToApply[u];
-    scheduleSheet.getRange(patch.rn, 1, patch.rn, numColsPhysical).setValues([patch.arr]);
+  /** 書き込み対象のみ（無効・空行を除外） */
+  var appendValues = filterAppendLinesForSet_(appendedRowsValues, numColsPhysical);
+
+  /** @type {!Array<{rn: number, line: !Array<*>}>} */
+  var updateWrites = [];
+  for (var u0 = 0; u0 < rowUpdatesToApply.length; u0++) {
+    var patch0 = rowUpdatesToApply[u0];
+    var lineU = sanitizeLineForSet_(patch0.arr, numColsPhysical);
+    if (!lineU) continue;
+    updateWrites.push({ rn: patch0.rn, line: lineU });
   }
 
-  if (appendedRowsValues.length > 0) {
-    var startRowAppend = scheduleSheet.getLastRow() + 1;
-    scheduleSheet
-      .getRange(startRowAppend, 1, startRowAppend + appendedRowsValues.length - 1, numColsPhysical)
-      .setValues(appendedRowsValues);
+  var appendedSkipped = appendQueued - appendValues.length;
+  if (appendedSkipped > 0)
+    skipped += appendedSkipped;
+
+  var updateDropped = updateQueued - updateWrites.length;
+  if (updateDropped > 0) skipped += updateDropped;
+
+  Logger.log('追加対象行数: ' + appendValues.length);
+  Logger.log('更新対象行数: ' + updateWrites.length);
+
+  var setValuesRows = appendValues.length + updateWrites.length;
+  Logger.log('実際に setValues する行数: ' + setValuesRows);
+
+  for (var u = 0; u < updateWrites.length; u++) {
+    var w = updateWrites[u];
+    var oneRowRange = scheduleSheet.getRange(w.rn, 1, w.rn, numColsPhysical);
+    var rowMatrix = [w.line];
+    if (rowMatrix.length !== oneRowRange.getNumRows()) {
+      throw new Error(
+        'internal: 更新の行数が一致しません (values=' +
+          rowMatrix.length +
+          ' rangeRows=' +
+          oneRowRange.getNumRows() +
+          ')'
+      );
+    }
+    oneRowRange.setValues(rowMatrix);
   }
+
+  if (appendValues.length > 0) {
+    var startRowAppend = scheduleSheet.getLastRow() + 1;
+    var appendRowCount = appendValues.length;
+    var appendLastRow = startRowAppend + appendRowCount - 1;
+    var appendRg = scheduleSheet.getRange(startRowAppend, 1, appendLastRow, numColsPhysical);
+    if (appendValues.length !== appendRg.getNumRows()) {
+      throw new Error(
+        'internal: 追記の行数が一致しません (values=' +
+          appendValues.length +
+          ' rangeRows=' +
+          appendRg.getNumRows() +
+          ')'
+      );
+    }
+    appendRg.setValues(appendValues);
+  }
+
+  var added = appendValues.length;
+  var updated = updateWrites.length;
 
   var needsReview = rows.filter(function (r) {
     return r['マスタ照合状態'] === MASTER_NEEDS_REVIEW;
@@ -464,7 +579,11 @@ function upsertScheduleRows_(scheduleSheet, rows, existingMap) {
       ' skipped=' +
       skipped +
       ' needsReview(in rows)=' +
-      needsReview
+      needsReview +
+      ' appendQueued=' +
+      appendQueued +
+      ' updateQueued=' +
+      updateQueued
   );
 
   return { added: added, updated: updated, skipped: skipped, needsReview: needsReview };
