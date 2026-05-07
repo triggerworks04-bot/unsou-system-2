@@ -43,12 +43,6 @@ var TYPE_VEHICLE = '車両';
 /** @type {string} ステータス初期値 */
 var INITIAL_STATUS = '確定';
 
-/** @type {string} 配車表から除かれた予定のステータス */
-var STATUS_CANCELLED = 'キャンセル';
-
-/** @type {string} 配車表削除時に照合メモ／備考へ追記する文言 */
-var CANCEL_MEMO_FROM_DISPATCH_REMOVED = '配車表から削除されたためキャンセル扱い';
-
 /** @type {string} マスタ照合：未実施 */
 var MASTER_PENDING = '未照合';
 
@@ -86,7 +80,6 @@ function onOpen() {
 
 /**
  * アクティブシート（月別配車表）を読み、10_配車予定へ変換する。
- * @return {void|{added:number, updated:number, skipped:number, needsReview:number, canceled:number}} 正常終了時は集計オブジェクト／catch 側は undefined
  */
 function convertCurrentDispatchSheetToSchedule() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -115,24 +108,9 @@ function convertCurrentDispatchSheetToSchedule() {
 
     var stats = { skippedBothEmpty: 0, skippedNoDate: 0 };
     var rows = buildScheduleRows_(sourceSheet, values, jobNames, stats);
-
-    var currentCancelKeys = new Set();
-    for (var sk = 0; sk < rows.length; sk++) {
-      var ck0 = buildCancelKey_(rows[sk]);
-      if (ck0) currentCancelKeys.add(ck0);
-    }
-
     var existingMap = findExistingScheduleMap_(scheduleSheet);
 
     var result = upsertScheduleRows_(scheduleSheet, rows, existingMap);
-
-    var canceled = cancelMissingScheduleRows_(
-      scheduleSheet,
-      existingMap,
-      currentCancelKeys,
-      sourceSheet.getName(),
-      headerMap
-    );
 
     var needsReview = rows.filter(function (r) {
       return r['マスタ照合状態'] === MASTER_NEEDS_REVIEW;
@@ -145,9 +123,6 @@ function convertCurrentDispatchSheetToSchedule() {
       '件\n' +
       '更新 ' +
       result.updated +
-      '件\n' +
-      'キャンセル ' +
-      canceled +
       '件\n' +
       '要確認 ' +
       needsReview +
@@ -163,19 +138,10 @@ function convertCurrentDispatchSheetToSchedule() {
         ' skipNoDate=' +
         stats.skippedNoDate +
         ' upsertSkipped=' +
-        result.skipped +
-        ' canceled=' +
-        canceled
+        result.skipped
     );
 
     ui.alert(msg);
-    return {
-      added: result.added,
-      updated: result.updated,
-      skipped: result.skipped,
-      needsReview: needsReview,
-      canceled: canceled,
-    };
   } catch (e) {
     Logger.log(e.stack || String(e.message));
     ui.alert('エラー: ' + (e.message || String(e)));
@@ -819,133 +785,6 @@ function upsertScheduleRows_(scheduleSheet, rows, existingMap) {
 }
 
 /**
- * 現在の月別配車表シート由来の既存行のうち、今回変換で生成されなかった cancelKey（作成元シート名＋作成元セル）は
- * 配車表から削除されたものとみなし、物理削除せず ステータス=キャンセル にする。
- * 運行予定ID・カレンダー連携・LINE・作成メタ情報は維持する。
- *
- * @param {GoogleAppsScript.Spreadsheet.Sheet} scheduleSheet
- * @param {!Object<string, {rowNumber: number, rowValues: !Array<*>, rowObject: !Object}>} existingMap
- * @param {!Set<string>} currentCancelKeys 今回 buildCancelKey_ したキーの集合
- * @param {string} sourceSheetName 変換実行中のアクティブシート名
- * @param {!Object<string, number>} headerMap ヘッダ名→列番号（1起点）
- * @return {number} キャンセル更新した行数
- */
-function cancelMissingScheduleRows_(
-  scheduleSheet,
-  existingMap,
-  currentCancelKeys,
-  sourceSheetName,
-  headerMap
-) {
-  existingMap = existingMap || {};
-  headerMap = headerMap || {};
-  currentCancelKeys = currentCancelKeys || new Set();
-
-  var normSourceName = normalizeCellValue_(String(sourceSheetName));
-
-  var lastColHdr = scheduleSheet.getLastColumn();
-  if (lastColHdr < 1) return 0;
-
-  var headerRowVals = scheduleSheet.getRange(1, 1, 1, lastColHdr).getValues()[0];
-  var numColsPhysical = headerRowVals.length;
-  var now = new Date();
-
-  var memoColumnName = '';
-  if (headerMap['照合エラーメモ']) memoColumnName = '照合エラーメモ';
-  else if (headerMap['備考']) memoColumnName = '備考';
-
-  var canceled = 0;
-  var keyList = Object.keys(existingMap);
-  var existingRowsCount = keyList.length;
-  var sourceSheetMatchedCount = 0;
-  var cancelKeyMissingCount = 0;
-
-  Logger.log('cancelMissingScheduleRows_: sourceSheetName=' + normSourceName);
-  Logger.log('cancelMissingScheduleRows_: currentCancelKeys.size=' + currentCancelKeys.size);
-  Logger.log('cancelMissingScheduleRows_: existing rows count=' + existingRowsCount);
-
-  for (var i = 0; i < keyList.length; i++) {
-    var mapKey = keyList[i];
-    var ex = existingMap[mapKey];
-    if (!ex || !ex.rowObject) continue;
-
-    var base = ex.rowObject;
-    var rowSheetNm = normalizeCellValue_(String(base['作成元シート名'] || ''));
-    if (rowSheetNm !== normSourceName) continue;
-
-    sourceSheetMatchedCount++;
-
-    var cancelKey = buildCancelKey_(base);
-    if (!cancelKey) continue;
-
-    if (currentCancelKeys.has(cancelKey)) continue;
-
-    var statusText = normalizeCellValue_(String(base['ステータス'] || ''));
-    var normCancelled = normalizeCellValue_(STATUS_CANCELLED);
-    if (statusText === normCancelled) continue;
-
-    cancelKeyMissingCount++;
-
-    Logger.log(
-      'cancelMissingScheduleRows_: cancel target 作成元セル=' +
-        normalizeCellValue_(String(base['作成元セル'] || '')) +
-        ' 案件名_入力値=' +
-        normalizeCellValue_(String(base['案件名_入力値'] || '')) +
-        ' ステータス=' +
-        statusText
-    );
-
-    var merged = {};
-    var bnames = Object.keys(base);
-    for (var b = 0; b < bnames.length; b++) {
-      merged[bnames[b]] = base[bnames[b]];
-    }
-
-    merged['ステータス'] = STATUS_CANCELLED;
-    merged['更新日時'] = now;
-
-    merged['運行予定ID'] = base['運行予定ID'];
-    merged['カレンダーイベントID'] =
-      base['カレンダーイベントID'] != null && String(base['カレンダーイベントID']) !== ''
-        ? base['カレンダーイベントID']
-        : merged['カレンダーイベントID'];
-    merged['最終同期日時'] =
-      base['最終同期日時'] != null && String(base['最終同期日時']) !== ''
-        ? base['最終同期日時']
-        : merged['最終同期日時'];
-    merged['LINE送信済みフラグ'] = base['LINE送信済みフラグ'];
-    if (base['作成日時'] != null && String(base['作成日時']) !== '') {
-      merged['作成日時'] = base['作成日時'];
-    }
-    merged['作成元シート名'] = base['作成元シート名'];
-    merged['作成元セル'] = base['作成元セル'];
-
-    if (memoColumnName) {
-      var prevMemo = normalizeCellValue_(String(merged[memoColumnName] || ''));
-      if (prevMemo) {
-        merged[memoColumnName] = prevMemo + ' ' + CANCEL_MEMO_FROM_DISPATCH_REMOVED;
-      } else {
-        merged[memoColumnName] = CANCEL_MEMO_FROM_DISPATCH_REMOVED;
-      }
-    }
-
-    var line = buildOutputLine_(headerRowVals, merged);
-    var lineSan = sanitizeLineForSet_(line, numColsPhysical);
-    if (!lineSan || isBlankPhysicalLine_(lineSan)) continue;
-
-    scheduleSheet.getRange(ex.rowNumber, 1, 1, numColsPhysical).setValues([lineSan]);
-    canceled++;
-  }
-
-  Logger.log('cancelMissingScheduleRows_: source sheet matched count=' + sourceSheetMatchedCount);
-  Logger.log('cancelMissingScheduleRows_: cancel key missing count=' + cancelKeyMissingCount);
-  Logger.log(
-    'cancelMissingScheduleRows_: canceled=' + canceled + ' sourceSheetName=' + normSourceName
-  );
-  return canceled;
-}
-
-/**
  * 1行目のヘッダ配列と mergedObj（列名キー）から、シート列順の1行を作る。
  * ヘッダが空の列は出力を空にする。
  * @param {!Array<*>} headerRowVals シート1行目そのまま
@@ -964,20 +803,6 @@ function buildOutputLine_(headerRowVals, mergedObj) {
     else line.push('');
   }
   return line;
-}
-
-/**
- * キャンセル判定用キー（予定日は含めない）。月別配車表では作成元シート名＋作成元セルがセル位置を一意に表す。
- * @param {!Object<string, *>} row
- * @return {string}
- */
-function buildCancelKey_(row) {
-  var sourceSheetName = normalizeCellValue_(String(row['作成元シート名'] || ''));
-  var sourceCell = normalizeCellValue_(String(row['作成元セル'] || ''));
-
-  if (!sourceSheetName || !sourceCell) return '';
-
-  return sourceSheetName + '|' + sourceCell;
 }
 
 /**
@@ -1035,12 +860,6 @@ function normalizeDateKey_(value, timeZone) {
     if (value instanceof Date && !isNaN(value.getTime())) {
       return Utilities.formatDate(value, timeZone, 'yyyy-MM-dd');
     }
-    if (typeof value === 'number' && !isNaN(value) && value > 20000) {
-      var serialCoerced = coerceToDate_(value, null, timeZone);
-      if (serialCoerced && !isNaN(serialCoerced.getTime())) {
-        return Utilities.formatDate(serialCoerced, timeZone, 'yyyy-MM-dd');
-      }
-    }
     var text = normalizeCellValue_(String(value));
     if (!text) return '';
     var m = text.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
@@ -1052,17 +871,6 @@ function normalizeDateKey_(value, timeZone) {
         '-' +
         String(Number(m[3])).padStart(2, '0')
       );
-    }
-    var numericText = Number(text);
-    if (
-      !isNaN(numericText) &&
-      numericText > 20000 &&
-      Math.floor(numericText) === numericText
-    ) {
-      var fromNumericStr = coerceToDate_(numericText, null, timeZone);
-      if (fromNumericStr && !isNaN(fromNumericStr.getTime())) {
-        return Utilities.formatDate(fromNumericStr, timeZone, 'yyyy-MM-dd');
-      }
     }
     var coerced = coerceToDate_(value, null, timeZone);
     if (coerced && !isNaN(coerced.getTime())) {
