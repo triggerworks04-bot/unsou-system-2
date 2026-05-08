@@ -159,5 +159,3 @@
 ## メモ欄
 
 （自由記述）
-
-2026-05-07｜GitHub DesktopとCursorの作業フォルダ整合を確認。Google Drive / 運行システム / unsou-system をGitHub管理対象として使い、Cursorは運行システム親フォルダを参照する運用に整理した。
