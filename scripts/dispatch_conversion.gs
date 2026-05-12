@@ -77,6 +77,7 @@ function onOpen() {
     .addItem(MENU_CONVERT_CURRENT, 'convertCurrentDispatchSheetToSchedule')
     .addItem('決定案件を10_配車予定へ反映', 'reflectDecidedCandidatesToSchedule')
     .addItem('未配車案件の割当状態を更新', 'updateAssignedDispatchStatus')
+    .addItem('90_配車表表示用を更新', 'refreshDispatchViewSheet')
     .addToUi();
 }
 
