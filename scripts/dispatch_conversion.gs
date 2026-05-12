@@ -75,6 +75,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu(MENU_DISPATCH)
     .addItem(MENU_CONVERT_CURRENT, 'convertCurrentDispatchSheetToSchedule')
+    .addItem('決定案件を10_配車予定へ反映', 'reflectDecidedCandidatesToSchedule')
     .addToUi();
 }
 
