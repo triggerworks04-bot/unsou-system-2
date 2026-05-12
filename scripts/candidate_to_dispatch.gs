@@ -4,6 +4,7 @@
  * 候補反映では出発・到着「予定時刻」列には書込まず、拡張列の積込/納品予定日時に集約する。
  *
  * 既存の月別横持ち→10_配車予定変換（dispatch_conversion.gs）とは独立。
+ * 年なしの積込/納品日（5/11 等）は 00_設定.配車表表示年月の年で補完（dispatch_view の読み取りと同一）。
  * ヘルパーは candidateToDispatch_ 接頭辞で既存と衝突しない。
  */
 
@@ -71,6 +72,10 @@ function reflectDecidedCandidatesToSchedule() {
     var skipped = 0;
     var errors = 0;
 
+    var tz0 = candidateToDispatch_getSpreadsheetTimeZone_();
+    /** 年なしの月日（5/11 等）を解釈するときの補完年（00_設定.配車表表示年月 → 実行日時の年月） */
+    var fallbackYear = candidateToDispatch_getFallbackYear_(ss, tz0);
+
     for (var r = 1; r < candData.length; r++) {
       var row = candData[r];
       var sheetRowNum = r + 1;
@@ -88,7 +93,8 @@ function reflectDecidedCandidatesToSchedule() {
           rowDisplay,
           candCol,
           sheetRowNum,
-          timestampText
+          timestampText,
+          fallbackYear
         );
         candidateToDispatch_appendScheduleRow_(scheduleSheet, headerRowVals, merged);
 
@@ -202,6 +208,19 @@ function candidateToDispatch_getTimestampZone_() {
 }
 
 /**
+ * 00_設定 の「配車表表示年月」に対応する年を返す（dispatch_view と同じ解釈）。
+ * シート欠如・未設定・不正時はスプレッドシートTZでの実行日時の年。
+ *
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss
+ * @param {string} tz IANA
+ * @return {number}
+ */
+function candidateToDispatch_getFallbackYear_(ss, tz) {
+  var ym = dispatchView_readTargetYearMonthFromSettings_(ss, tz);
+  return ym.year;
+}
+
+/**
  * @param {!Date} date
  * @param {string} tz IANA
  * @return {string}
@@ -277,12 +296,13 @@ function candidateToDispatch_debugCell_(v) {
  * @param {*} displayVal
  * @param {*} rawVal
  * @param {string} tz
+ * @param {number} fallbackYear 年なし月日の補完に使う年（00_設定に準拠）
  * @return {?{y: number, m: number, d: number}}
  */
-function candidateToDispatch_parseDateTripletFromAny_(displayVal, rawVal, tz) {
-  var a = candidateToDispatch_parseDateOnlyParts_(displayVal, tz);
+function candidateToDispatch_parseDateTripletFromAny_(displayVal, rawVal, tz, fallbackYear) {
+  var a = candidateToDispatch_parseDateOnlyParts_(displayVal, tz, fallbackYear);
   if (a) return a;
-  return candidateToDispatch_parseDateOnlyParts_(rawVal, tz);
+  return candidateToDispatch_parseDateOnlyParts_(rawVal, tz, fallbackYear);
 }
 
 /**
@@ -327,12 +347,13 @@ function candidateToDispatch_formatDateParseError_(sheetRowNum, row, rowDisplay,
 
 /**
  * カレンダー日 {y,m,d}（月は 1〜12）。解釈不能なら null。
- * Date は getFullYear / getMonth+1 / getDate。文字列は / . - ・年月日・全角対応。数値シリアルも解釈。
+ * 年なしの M/D・M月D日 は fallbackYear で補完。Date／シリアル／Date.parse が 2001 年に落ちる誤解釈は補完年へ差し替え。
  * @param {*} dateRaw
  * @param {string} tz
+ * @param {number} fallbackYear 00_設定.配車表表示年月に連動
  * @return {?{y: number, m: number, d: number}}
  */
-function candidateToDispatch_parseDateOnlyParts_(dateRaw, tz) {
+function candidateToDispatch_parseDateOnlyParts_(dateRaw, tz, fallbackYear) {
   if (dateRaw === null || dateRaw === undefined || dateRaw === '') return null;
 
   var y;
@@ -344,6 +365,9 @@ function candidateToDispatch_parseDateOnlyParts_(dateRaw, tz) {
     y = dateRaw.getFullYear();
     mo = dateRaw.getMonth() + 1;
     day = dateRaw.getDate();
+    if (fallbackYear != null && y === 2001 && candidateToDispatch_isValidYmd_(fallbackYear, mo, day)) {
+      y = fallbackYear;
+    }
     if (!candidateToDispatch_isValidYmd_(y, mo, day)) return null;
     return { y: y, m: mo, d: day };
   }
@@ -357,6 +381,9 @@ function candidateToDispatch_parseDateOnlyParts_(dateRaw, tz) {
       y = dt.getFullYear();
       mo = dt.getMonth() + 1;
       day = dt.getDate();
+      if (fallbackYear != null && y === 2001 && candidateToDispatch_isValidYmd_(fallbackYear, mo, day)) {
+        y = fallbackYear;
+      }
       if (!candidateToDispatch_isValidYmd_(y, mo, day)) return null;
       return { y: y, m: mo, d: day };
     }
@@ -366,13 +393,13 @@ function candidateToDispatch_parseDateOnlyParts_(dateRaw, tz) {
   var text = normalizeCellValue_(String(dateRaw));
   if (!text) return null;
 
-  var trip = candidateToDispatch_tripletFromFlexibleDateText_(text);
+  var trip = candidateToDispatch_tripletFromFlexibleDateText_(text, fallbackYear);
   if (trip) return trip;
 
   var serialM = text.match(/^(\d{5,7})$/);
   if (serialM) {
     var sn = parseInt(serialM[1], 10);
-    if (sn > 20000) return candidateToDispatch_parseDateOnlyParts_(sn, tz);
+    if (sn > 20000) return candidateToDispatch_parseDateOnlyParts_(sn, tz, fallbackYear);
   }
 
   var coerced = resolveScheduleDate_(dateRaw, null, tz);
@@ -380,6 +407,9 @@ function candidateToDispatch_parseDateOnlyParts_(dateRaw, tz) {
     y = coerced.getFullYear();
     mo = coerced.getMonth() + 1;
     day = coerced.getDate();
+    if (fallbackYear != null && y === 2001 && candidateToDispatch_isValidYmd_(fallbackYear, mo, day)) {
+      y = fallbackYear;
+    }
     if (candidateToDispatch_isValidYmd_(y, mo, day)) return { y: y, m: mo, d: day };
   }
 
@@ -387,11 +417,13 @@ function candidateToDispatch_parseDateOnlyParts_(dateRaw, tz) {
 }
 
 /**
- * 表示文字列の日付部分（先頭一致）。2026/5/26・2026-05-26・2026年5月26日 等。
+ * 表示文字列の日付部分（先頭一致）。2026/5/26・2026-05-26・2026年5月26日。
+ * fallbackYear ありのとき 5/11・5-11・5月11日（年なし）を M/D として補完。
  * @param {*} text
+ * @param {number} fallbackYear
  * @return {?{y: number, m: number, d: number}}
  */
-function candidateToDispatch_tripletFromFlexibleDateText_(text) {
+function candidateToDispatch_tripletFromFlexibleDateText_(text, fallbackYear) {
   var t = normalizeCellValue_(String(text));
   if (!t) return null;
   t = candidateToDispatch_toAsciiDigits_(t);
@@ -414,6 +446,21 @@ function candidateToDispatch_tripletFromFlexibleDateText_(text) {
     mo = parseInt(jp[2], 10);
     day = parseInt(jp[3], 10);
     if (candidateToDispatch_isValidYmd_(y, mo, day)) return { y: y, m: mo, d: day };
+  }
+
+  if (fallbackYear != null && candidateToDispatch_isValidYmd_(fallbackYear, 1, 1)) {
+    var md = t.match(/^(\d{1,2})[\/\.\-](\d{1,2})$/);
+    if (md) {
+      mo = parseInt(md[1], 10);
+      day = parseInt(md[2], 10);
+      if (candidateToDispatch_isValidYmd_(fallbackYear, mo, day)) return { y: fallbackYear, m: mo, d: day };
+    }
+    var mdJp = t.match(/^(\d{1,2})\s*月\s*(\d{1,2})\s*日/);
+    if (mdJp) {
+      mo = parseInt(mdJp[1], 10);
+      day = parseInt(mdJp[2], 10);
+      if (candidateToDispatch_isValidYmd_(fallbackYear, mo, day)) return { y: fallbackYear, m: mo, d: day };
+    }
   }
 
   return null;
@@ -502,6 +549,7 @@ function candidateToDispatch_parseTimePartsFromDisplay_(displayStr) {
  * @param {string} dateColName
  * @param {string} timeColName
  * @param {string} tz
+ * @param {number} fallbackYear
  * @return {string}
  */
 function candidateToDispatch_buildDatetimeYmdHmDisplay_(
@@ -510,14 +558,15 @@ function candidateToDispatch_buildDatetimeYmdHmDisplay_(
   candCol,
   dateColName,
   timeColName,
-  tz
+  tz,
+  fallbackYear
 ) {
   var dateIdx = candCol[dateColName];
   if (dateIdx == null) return '';
 
   var dateDisplay = dateIdx < rowDisplay.length ? rowDisplay[dateIdx] : '';
   var dateValue = dateIdx < row.length ? row[dateIdx] : '';
-  var p = candidateToDispatch_parseDateTripletFromAny_(dateDisplay, dateValue, tz);
+  var p = candidateToDispatch_parseDateTripletFromAny_(dateDisplay, dateValue, tz, fallbackYear);
   if (!p) return '';
 
   var timeIdx = candCol[timeColName];
@@ -597,9 +646,10 @@ function candidateToDispatch_parseTimePartsFromInput_(timeRaw) {
  * @param {!Array<string>} rowDisplay
  * @param {!Object<string, number>} candCol
  * @param {number} sheetRowNum 1起点
+ * @param {number} fallbackYear 年なし月日の補完
  * @return {!Date}
  */
-function candidateToDispatch_resolvePlanDate_(row, rowDisplay, candCol, sheetRowNum) {
+function candidateToDispatch_resolvePlanDate_(row, rowDisplay, candCol, sheetRowNum, fallbackYear) {
   var pickupIdx = candCol['積込日'];
   var deliveryIdx = candCol['納品日'];
   var tz = candidateToDispatch_getSpreadsheetTimeZone_();
@@ -607,13 +657,13 @@ function candidateToDispatch_resolvePlanDate_(row, rowDisplay, candCol, sheetRow
   if (pickupIdx != null) {
     var pickupDateDisplay = pickupIdx < rowDisplay.length ? rowDisplay[pickupIdx] : '';
     var pickupDateValue = pickupIdx < row.length ? row[pickupIdx] : '';
-    var p1 = candidateToDispatch_parseDateTripletFromAny_(pickupDateDisplay, pickupDateValue, tz);
+    var p1 = candidateToDispatch_parseDateTripletFromAny_(pickupDateDisplay, pickupDateValue, tz, fallbackYear);
     if (p1) return new Date(p1.y, p1.m - 1, p1.d, 12, 0, 0);
   }
   if (deliveryIdx != null) {
     var deliveryDateDisplay = deliveryIdx < rowDisplay.length ? rowDisplay[deliveryIdx] : '';
     var deliveryDateValue = deliveryIdx < row.length ? row[deliveryIdx] : '';
-    var p2 = candidateToDispatch_parseDateTripletFromAny_(deliveryDateDisplay, deliveryDateValue, tz);
+    var p2 = candidateToDispatch_parseDateTripletFromAny_(deliveryDateDisplay, deliveryDateValue, tz, fallbackYear);
     if (p2) return new Date(p2.y, p2.m - 1, p2.d, 12, 0, 0);
   }
   throw new Error(candidateToDispatch_formatDateParseError_(sheetRowNum, row, rowDisplay, candCol));
@@ -625,6 +675,7 @@ function candidateToDispatch_resolvePlanDate_(row, rowDisplay, candCol, sheetRow
  * @param {!Object<string, number>} candCol
  * @param {number} sheetRowNum 1起点
  * @param {string} timestampText yyyy/MM/dd HH:mm:ss（スプレッドシート TZ）
+ * @param {number} fallbackYear 00_設定.配車表表示年月から求める補完年
  * @return {!Object<string, *>}
  */
 function candidateToDispatch_buildMergedFromCandidateRow_(
@@ -632,9 +683,10 @@ function candidateToDispatch_buildMergedFromCandidateRow_(
   rowDisplay,
   candCol,
   sheetRowNum,
-  timestampText
+  timestampText,
+  fallbackYear
 ) {
-  var planDate = candidateToDispatch_resolvePlanDate_(row, rowDisplay, candCol, sheetRowNum);
+  var planDate = candidateToDispatch_resolvePlanDate_(row, rowDisplay, candCol, sheetRowNum, fallbackYear);
   var y = planDate.getFullYear();
   var m = planDate.getMonth() + 1;
   var d = planDate.getDate();
@@ -685,7 +737,8 @@ function candidateToDispatch_buildMergedFromCandidateRow_(
     candCol,
     '積込日',
     '積込時間',
-    tz
+    tz,
+    fallbackYear
   );
   merged['納品予定日時'] = candidateToDispatch_buildDatetimeYmdHmDisplay_(
     row,
@@ -693,7 +746,8 @@ function candidateToDispatch_buildMergedFromCandidateRow_(
     candCol,
     '納品日',
     '納品時間',
-    tz
+    tz,
+    fallbackYear
   );
 
   merged['作業内容'] = '';
